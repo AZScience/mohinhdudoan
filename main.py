@@ -11,6 +11,9 @@ import os
 import joblib
 from datetime import date, timedelta
 import streamlit.components.v1 as components
+from textblob import TextBlob
+import traceback
+from gnews import GNews # Import the new GNews library
 
 # --- Constants ---
 DATA_DIR = "data"
@@ -124,6 +127,64 @@ market_data_html = '''
 # --- Helper Functions ---
 def ensure_dir(directory_path):
     os.makedirs(directory_path, exist_ok=True)
+
+# --- Sentiment Analysis (Now using GNews) ---
+@st.cache_data(ttl=3600) # Cache for 1 hour
+def get_and_analyze_sentiment(ticker):
+    # Clean ticker for better search (e.g., FPT.VN -> FPT)
+    search_term = ticker.split('.')[0]
+    
+    google_news = GNews(language='en', country='US') # Focus on English financial news
+    news = google_news.get_news(f'{search_term} stock')
+
+    if not news:
+        return None, [], f"No news found for '{search_term}' on Google News."
+
+    polarity = 0
+    titles = []
+    for item in news:
+        title = item.get('title')
+        if title:
+            titles.append(title)
+            # Use TextBlob to analyze the sentiment of the title
+            blob = TextBlob(title)
+            polarity += blob.sentiment.polarity
+
+    if not titles:
+        return None, [], "Could not extract any valid news titles."
+
+    # Calculate average polarity
+    avg_polarity = polarity / len(titles)
+    return avg_polarity, titles, None
+
+def display_sentiment_analysis(ticker):
+    st.subheader("📰 Phân tích tâm lý từ Google News") # Changed title
+    with st.spinner(f"Đang tìm kiếm và phân tích tin tức cho {ticker}..."):
+        try:
+            sentiment_score, news_titles, error_message = get_and_analyze_sentiment(ticker)
+            
+            if error_message:
+                st.info(f"Không tìm thấy tin tức gần đây cho mã \"{ticker}\".")
+                st.divider()
+                return
+
+            # This component is now purely for display in the sidebar
+            if sentiment_score > 0.1:
+                st.success(f"**Tâm lý chung: TÍCH CỰC ({sentiment_score:.2f})**")
+            elif sentiment_score < -0.1:
+                st.error(f"**Tâm lý chung: TIÊU CỰC ({sentiment_score:.2f})**")
+            else:
+                st.info(f"**Tâm lý chung: TRUNG LẬP ({sentiment_score:.2f})**")
+
+            with st.expander("Xem các tiêu đề tin tức chính"):
+                for i, title in enumerate(news_titles[:5]): # Show top 5
+                    st.markdown(f"- {title}")
+
+        except Exception as e:
+            st.warning(f"Không thể tải phân tích tâm lý: {e}")
+
+    st.divider()
+
 
 # --- Technical Indicator Calculations ---
 def calculate_rsi(data, window=14):
@@ -297,7 +358,7 @@ def display_results(df, ticker, days_to_predict, future_prices):
             prediction_dates = [last_actual_date] + [last_actual_date + timedelta(days=i) for i in range(1, len(future_prices) + 1)]
             prediction_values = [last_actual_price] + [float(p) for p in future_prices]
             prediction_series = pd.Series(data=prediction_values, index=pd.to_datetime(prediction_dates))
-            ax.plot(prediction_series.index, prediction_series.values, color='red', linestyle='--', label='Giá dự đoán')
+            ax.plot(prediction_series.index, prediction_series.values, color='red', linestyle='--', label='Giá dự đoán (đã điều chỉnh)')
             ax.set_title(f'Giá thực tế & Dự đoán cho {ticker}', fontsize=16)
             ax.set_xlabel('Ngày', fontsize=12)
             ax.set_ylabel('Giá Đóng cửa (Tiền)', fontsize=12)
@@ -386,6 +447,8 @@ st.markdown("---")
 components.html(market_overview_html, height=72)
 
 col1, col2 = st.columns([1, 2])
+action = None
+
 with col1:
     st.header("⚙️ Nhập mã cổ phiếu")
     ticker_input = st.text_input("📈Nhập mã chứng khoán cần dự đoán (VD: FPT.VN, NVDA, AAPL...):", "AAPL").upper()
@@ -401,25 +464,31 @@ with col1:
         run_button = st.button("🚀 Dự đoán", type="primary", use_container_width=True)
     with col1_2:
         force_train_button = st.button("🔄 Huấn luyện", use_container_width=True)
-    
-    st.markdown("<br>", unsafe_allow_html=True) # Add some space
-    components.html(market_data_html, height=450)
 
-with col2:
-    st.header(f"📈 Kết quả dự đoán cho cổ phiếu: {ticker_input}")
-    action = None
     if run_button:
         action = 'predict_or_train'
     elif force_train_button:
         action = 'force_train'
+
+    # Display sentiment analysis in the sidebar if an action is triggered
+    if action:
+        processed_ticker = ticker_input.split(',')[0].strip()
+        if processed_ticker:
+            display_sentiment_analysis(processed_ticker)
+        else:
+            st.error("Mã chứng khoán không được để trống.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    components.html(market_data_html, height=450)
+
+with col2:
+    st.header(f"📈 Kết quả dự đoán cho cổ phiếu: {ticker_input}")
     
     if action:
         processed_ticker = ticker_input.split(',')[0].strip()
-        if not processed_ticker:
-            st.error("Mã chứng khoán không được để trống.")
-        else:
-            model_path = os.path.join(MODELS_DIR, f"{processed_ticker}_model.keras")
+        if processed_ticker:
             try:
+                model_path = os.path.join(MODELS_DIR, f"{processed_ticker}_model.keras")
                 if action == 'force_train' or not os.path.exists(model_path):
                     st.warning(f"Bắt đầu quá trình huấn luyện mới cho {processed_ticker}.")
                     model, scaler, last_sequence, data_for_display = run_training(processed_ticker)
@@ -432,14 +501,32 @@ with col2:
                 if all(v is not None for v in [model, scaler, last_sequence, data_for_display]):
                     with st.spinner("Đang dự đoán giá tương lai..."):
                         future_prices = predict_future(model, scaler, last_sequence, days_to_predict)
-                    display_results(data_for_display, processed_ticker, days_to_predict, future_prices)
+
+                    # --- SENTIMENT ADJUSTMENT LOGIC ---
+                    sentiment_score, _, _ = get_and_analyze_sentiment(processed_ticker)
+                    adjusted_prices = future_prices
+                    adjustment_factor = 1.0
+
+                    if sentiment_score is not None:
+                        if sentiment_score > 0.2:  # Strong positive sentiment
+                            adjustment_factor = 1.005  # +0.5% adjustment
+                        elif sentiment_score < -0.2:  # Strong negative sentiment
+                            adjustment_factor = 0.995  # -0.5% adjustment
+
+                        if adjustment_factor != 1.0:
+                            adjusted_prices = [p * adjustment_factor for p in future_prices]
+                            change_percent = (adjustment_factor - 1) * 100
+                            direction = "tích cực" if change_percent > 0 else "tiêu cực"
+                            st.info(f"**Lưu ý:** Kết quả đã được điều chỉnh **{change_percent:+.2f}%** dựa trên tâm lý tin tức {direction} gần đây.", icon="🧠")
+                    # --- END OF ADJUSTMENT LOGIC ---
+
+                    display_results(data_for_display, processed_ticker, days_to_predict, adjusted_prices)
             
             except ValueError as e:
                 st.error(e)
                 st.warning("Gợi ý: Mã CK Việt Nam thường có đuôi '.VN' (VCB.VN). Chỉ số có ký hiệu đặc biệt ('^VNINDEX').")
             except Exception as e:
                 st.error(f"Đã xảy ra một lỗi nghiêm trọng: {e}")
-                import traceback
                 st.code(traceback.format_exc())
     else:
         st.write("Kết quả sẽ hiện thị sau khi nhấn nút để bắt đầu.")

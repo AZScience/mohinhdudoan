@@ -1,8 +1,10 @@
-pandas
-scikit-learn
-tensorflow
-scikeras
-matplotlib
+streamlit
 yfinance
-requests
-beautifulsoup4
+pandas
+numpy
+tensorflow
+scikit-learn
+matplotlib
+joblib
+textblob
+gnews

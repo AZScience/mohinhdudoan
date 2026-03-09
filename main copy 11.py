@@ -11,7 +11,6 @@ import os
 import joblib
 from datetime import date, timedelta
 import streamlit.components.v1 as components
-from news_scraper import get_cafef_news, get_vietstock_news, get_ndh_news
 
 # --- Constants ---
 DATA_DIR = "data"
@@ -28,18 +27,95 @@ market_overview_html = '''
   <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
   {
     "symbols": [
-      {"description": "VN-INDEX", "proName": "VCBF:^VNINDEX"},
-      {"description": "FPT", "proName": "HOSE:FPT"},
-      {"description": "Vietcombank", "proName": "HOSE:VCB"},
-      {"description": "Vingroup", "proName": "HOSE:VIC"},
-      {"description": "S&P 500", "proName": "OANDA:SPX500USD"},
-      {"description": "Nasdaq 100", "proName": "OANDA:NAS100USD"},
-      {"description": "Bitcoin", "proName": "BITSTAMP:BTCUSD"},
-      {"description": "Ethereum", "proName": "BITSTAMP:ETHUSD"}
+      {
+        "description": "VN-INDEX",
+        "proName": "VCBF:^VNINDEX"
+      },
+      {
+        "description": "FPT",
+        "proName": "HOSE:FPT"
+      },
+      {
+        "description": "Vietcombank",
+        "proName": "HOSE:VCB"
+      },
+      {
+        "description": "Vingroup",
+        "proName": "HOSE:VIC"
+      },
+      {
+        "description": "S&P 500",
+        "proName": "OANDA:SPX500USD"
+      },
+      {
+        "description": "Nasdaq 100",
+        "proName": "OANDA:NAS100USD"
+      },
+      {
+        "description": "Bitcoin",
+        "proName": "BITSTAMP:BTCUSD"
+      },
+      {
+        "description": "Ethereum",
+        "proName": "BITSTAMP:ETHUSD"
+      }
     ],
-    "showSymbolLogo": true, "colorTheme": "dark", "isTransparent": false,
-    "displayMode": "adaptive", "locale": "vi_VN"
+    "showSymbolLogo": true,
+    "colorTheme": "dark",
+    "isTransparent": false,
+    "displayMode": "adaptive",
+    "locale": "vi_VN"
   }
+  </script>
+</div>
+<!-- TradingView Widget END -->
+'''
+
+market_data_html = '''
+<!-- TradingView Widget BEGIN -->
+<div class="tradingview-widget-container">
+  <div class="tradingview-widget-container__widget"></div>
+  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-market-data.js" async>
+  {
+  "width": "100%",
+  "height": "100%",
+  "symbolsGroups": [
+    {
+      "name": "Sàn HOSE",
+      "originalName": "Indices",
+      "symbols": [
+        {
+          "name": "HOSE:FPT",
+          "displayName": "FPT"
+        },
+        {
+          "name": "HOSE:VCB",
+          "displayName": "VCB"
+        },
+        {
+          "name": "HOSE:VIC",
+          "displayName": "VIC"
+        },
+        {
+          "name": "HOSE:HPG",
+          "displayName": "HPG"
+        },
+        {
+          "name": "HOSE:MSN",
+          "displayName": "MSN"
+        },
+        {
+          "name": "HOSE:MWG",
+          "displayName": "MWG"
+        }
+      ]
+    }
+  ],
+  "showSymbolLogo": true,
+  "colorTheme": "dark",
+  "isTransparent": false,
+  "locale": "vi_VN"
+}
   </script>
 </div>
 <!-- TradingView Widget END -->
@@ -49,15 +125,15 @@ market_overview_html = '''
 def ensure_dir(directory_path):
     os.makedirs(directory_path, exist_ok=True)
 
-# --- Technical Indicator Calculations (Internal) ---
+# --- Technical Indicator Calculations ---
 def calculate_rsi(data, window=14):
     delta = data['Close'].diff()
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/window, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/window, adjust=False).mean()
-    # Avoid division by zero
     loss = loss.replace(0, 1e-10)
     rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 def calculate_macd(data, fast_window=12, slow_window=26):
     ema_fast = data['Close'].ewm(span=fast_window, adjust=False).mean()
@@ -75,14 +151,6 @@ def add_technical_indicators(df):
     return df_ta
 
 # --- Data Loading and Processing ---
-def get_valid_ticker(ticker):
-    """Appends .VN to Vietnamese stock codes if they don't have it."""
-    ticker = ticker.upper().strip()
-    # Simple check for common Vietnamese stock codes (2-3 letters)
-    if len(ticker) in [2, 3] and not ticker.endswith(('.VN', '.HNX', '.UPCOM')):
-        return f"{ticker}.VN"
-    return ticker
-
 @st.cache_data(ttl=3600)
 def get_or_download_data(ticker):
     ensure_dir(DATA_DIR)
@@ -92,9 +160,9 @@ def get_or_download_data(ticker):
         if df.empty:
             raise ValueError(f"Không có dữ liệu cho mã '{ticker}'. Mã có thể bị hủy niêm yết hoặc sai.")
         df.reset_index().to_csv(file_path, index=False)
-    except Exception:
+    except Exception as e:
         if not os.path.exists(file_path):
-            raise ValueError(f"Tải dữ liệu cho '{ticker}' thất bại. Vui lòng kiểm tra lại mã.")
+            raise ValueError(f"Không có dữ liệu cho mã '{ticker}'. Mã có thể bị hủy niêm yết hoặc sai.")
     return pd.read_csv(file_path, parse_dates=['Date'], index_col='Date')
 
 def create_sequences(data, look_back):
@@ -124,31 +192,27 @@ def build_model(input_shape):
 def run_training(ticker):
     model_path = os.path.join(MODELS_DIR, f"{ticker}_model.keras")
     scaler_path = os.path.join(SCALERS_DIR, f"{ticker}_scaler.pkl")
-    with st.spinner(f"Đang huấn luyện mô hình cho {ticker}... (việc này có thể mất vài phút)"):
+    with st.spinner("Tải và xử lý dữ liệu..."):
         data = get_or_download_data(ticker)
         data_processed = add_technical_indicators(data)
-        if data_processed.empty or len(data_processed) < LOOK_BACK:
-            st.error(f"Không đủ dữ liệu cho '{ticker}' để huấn luyện.")
-            return None, None, None, None
-
-        data_for_training = data_processed[FEATURES].astype(float)
-        # We fit the scaler on feature names to avoid warnings later
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        scaled_data = scaler.fit_transform(data_for_training)
-
+    if data_processed.empty or len(data_processed) < LOOK_BACK:
+        st.error(f"Không đủ dữ liệu cho '{ticker}' sau khi xử lý.")
+        return None, None, None, None
+    data_for_training = data_processed[FEATURES].astype(float)
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(data_for_training)
+    with st.spinner("Tạo chuỗi và huấn luyện mô hình..."):
         X, y = create_sequences(scaled_data, LOOK_BACK)
         if len(X) == 0:
             st.error("Không thể tạo chuỗi huấn luyện. Dữ liệu quá ít.")
             return None, None, None, None
-
         model = build_model(input_shape=(LOOK_BACK, len(FEATURES)))
         model.fit(X, y, batch_size=32, epochs=50, verbose=0)
-        
+    with st.spinner("Lưu mô hình và scaler..."):
         ensure_dir(MODELS_DIR)
         ensure_dir(SCALERS_DIR)
         model.save(model_path)
         joblib.dump(scaler, scaler_path)
-
     last_sequence = scaled_data[-LOOK_BACK:]
     return model, scaler, last_sequence, data_processed
 
@@ -159,115 +223,226 @@ def predict_future(model, scaler, initial_input, days_to_predict):
     for _ in range(days_to_predict):
         X_pred = np.reshape(current_input, (1, LOOK_BACK, num_features))
         predicted_price_scaled = model.predict(X_pred, verbose=0)[0, 0]
-
         dummy_array = np.zeros((1, num_features))
         dummy_array[0, 0] = predicted_price_scaled
         predicted_price_actual = scaler.inverse_transform(dummy_array)[0, 0]
         future_predictions.append(float(predicted_price_actual))
-
         new_row_scaled = current_input[-1, :].copy()
         new_row_scaled[0] = predicted_price_scaled
-        new_row_scaled[1:4] = predicted_price_scaled # Open, High, Low approximation
-        current_input = np.vstack([current_input[1:], new_row_scaled])
-
+        new_row_scaled[1:4] = predicted_price_scaled
+        new_row_scaled = new_row_scaled.reshape(1, num_features)
+        current_input = np.concatenate([current_input[1:], new_row_scaled], axis=0)
     return future_predictions
 
 def run_prediction(ticker):
     model_path = os.path.join(MODELS_DIR, f"{ticker}_model.keras")
     scaler_path = os.path.join(SCALERS_DIR, f"{ticker}_scaler.pkl")
-    with st.spinner(f"Tải mô hình và dữ liệu cho {ticker}..."):
+    with st.spinner(f"Tải mô hình, scaler và dữ liệu gần đây cho {ticker}..."):
         model = load_model(model_path)
         scaler = joblib.load(scaler_path)
         data = get_or_download_data(ticker)
         if data.empty or len(data) < LOOK_BACK:
             raise ValueError("Không đủ dữ liệu gần đây để dự đoán.")
-
         data_processed = add_technical_indicators(data)
         data_filtered = data_processed[FEATURES].astype(float)
-        scaled_data = scaler.transform(data_filtered) # Use transform, not fit_transform
+        scaled_data = scaler.transform(data_filtered)
         last_sequence = scaled_data[-LOOK_BACK:]
-
     return model, scaler, last_sequence, data_processed
 
 # --- UI and Main Application ---
-def display_news(news_function):
-    try:
-        news_items = news_function(max_items=7)
-        if news_items:
-            for item in news_items:
-                st.markdown(f"▪️ [{item['title']}]({item['link']})", unsafe_allow_html=True)
-        else:
-            st.info("Không có tin tức mới hoặc không thể tải từ nguồn này.")
-    except Exception as e:
-        st.warning(f"Lỗi khi tải tin tức: {e}")
+def display_realtime_data(df):
+    st.subheader("📊 Dữ liệu thị trường mới nhất")
+    if len(df) < 2:
+        st.warning("Không đủ dữ liệu để hiển thị thông tin real-time.")
+        return
+    
+    last_row = df.iloc[-1]
+    previous_row = df.iloc[-2]
+    
+    last_price = last_row['Close']
+    price_change = last_row['Close'] - previous_row['Close']
+    price_delta_percent = (price_change / previous_row['Close']) * 100
+    volume = last_row['Volume']
+    day_high = last_row['High']
+    day_low = last_row['Low']
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(
+            label=f"Giá đóng cửa ({last_row.name.strftime('%d/%m/%Y')})",
+            value=f"${last_price:,.2f}",
+            delta=f"{price_change:,.2f} ({price_delta_percent:.2f}%)"
+        )
+    with col2:
+        st.metric(label="Khối lượng giao dịch", value=f"{int(volume):,}")
+    with col3:
+        st.metric(label="Cao / Thấp trong ngày", value=f"${day_high:,.2f} / ${day_low:,.2f}")
+    st.divider()
 
-def display_results(df, ticker, future_prices):
-    st.success(f"Dự đoán thành công! Giá đóng cửa ngày mai: **${future_prices[0]:,.2f}**")
-    tab1, tab2 = st.tabs(['📈 Biểu đồ Dự đoán', '📋 Bảng Dữ liệu'])
+def display_results(df, ticker, days_to_predict, future_prices):
+    if not isinstance(future_prices, list) or not future_prices:
+        st.error("Lỗi: Dữ liệu dự đoán không hợp lệ hoặc rỗng.")
+        return
+    st.success(f"Dự đoán thành công! Giá đóng cửa ngày mai: **${future_prices[0]:.2f}**")
+
+    tab1, tab2 = st.tabs(['📈 Biểu đồ Dự đoán', '📋 Bảng Dữ liệu Dự đoán Tương lai'])
+
     with tab1:
-        historical_df = df.tail(90)
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(historical_df.index, historical_df['Close'], color='blue', label='Giá thực tế')
-        last_actual_date = historical_df.index[-1]
-        prediction_dates = pd.date_range(start=last_actual_date + timedelta(days=1), periods=len(future_prices))
-        ax.plot(prediction_dates, future_prices, color='red', linestyle='--', label='Giá dự đoán')
-        ax.set_title(f'Giá thực tế & Dự đoán cho {ticker}', fontsize=16)
-        ax.set_ylabel('Giá Đóng cửa (USD)', fontsize=12)
-        ax.grid(True, linestyle='--', alpha=0.6)
-        ax.legend()
-        plt.xticks(rotation=45)
-        st.pyplot(fig)
-    with tab2:
-        future_dates_table = [df.index[-1] + timedelta(days=i) for i in range(1, len(future_prices) + 1)]
-        forecast_df = pd.DataFrame({'Ngày': future_dates_table, 'Giá dự đoán': future_prices})
-        st.dataframe(forecast_df.set_index('Ngày').style.format({"Giá dự đoán": "${:,.2f}"}))
+        try:
+            historical_df = df.tail(90)
+            fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(historical_df.index, historical_df['Close'], color='blue', label='Giá thực tế')
+            last_actual_date = historical_df.index[-1]
+            last_actual_price = historical_df['Close'].iloc[-1]
+            prediction_dates = [last_actual_date] + [last_actual_date + timedelta(days=i) for i in range(1, len(future_prices) + 1)]
+            prediction_values = [last_actual_price] + [float(p) for p in future_prices]
+            prediction_series = pd.Series(data=prediction_values, index=pd.to_datetime(prediction_dates))
+            ax.plot(prediction_series.index, prediction_series.values, color='red', linestyle='--', label='Giá dự đoán')
+            ax.set_title(f'Giá thực tế & Dự đoán cho {ticker}', fontsize=16)
+            ax.set_xlabel('Ngày', fontsize=12)
+            ax.set_ylabel('Giá Đóng cửa (Tiền)', fontsize=12)
+            ax.grid(True, linestyle='--', alpha=0.6)
+            ax.legend()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st.pyplot(fig)
+        except Exception as e:
+            st.error(f"Đã xảy ra lỗi khi vẽ biểu đồ: {e}")
 
-st.set_page_config(layout="wide", page_title="Dự đoán Giá Cổ phiếu")
-st.markdown("<h1 style='text-align: center;'>💹 MÔ HÌNH DỰ ĐOÁN GIÁ CỔ PHIẾU</h1>", unsafe_allow_html=True)
+    with tab2:
+        try:
+            last_actual_price = df['Close'].iloc[-1]
+            comparison_prices = [last_actual_price] + future_prices[:-1]
+            future_dates_table = [df.index[-1] + timedelta(days=i) for i in range(1, len(future_prices) + 1)]
+            
+            forecast_df = pd.DataFrame({
+                'Ngày': future_dates_table, 
+                'Giá đóng cửa dự đoán': future_prices,
+                'Giá hôm trước': comparison_prices
+            })
+
+            def get_status_with_icon(row):
+                if row['Giá đóng cửa dự đoán'] > row['Giá hôm trước']:
+                    return '▲ TĂNG'
+                else:
+                    return '▼ GIẢM'
+            
+            forecast_df['Trạng thái'] = forecast_df.apply(get_status_with_icon, axis=1)
+
+            display_df = forecast_df[['Ngày', 'Giá đóng cửa dự đoán', 'Trạng thái']].copy()
+            display_df['Ngày'] = pd.to_datetime(display_df['Ngày']).dt.strftime('%d/%m/%Y')
+            
+            def color_status(val):
+                color = 'green' if 'TĂNG' in val else 'red'
+                return f'color: {color}; font-weight: bold;'
+
+            styled_df = display_df.set_index('Ngày').style.applymap(
+                color_status, subset=['Trạng thái']
+            ).format({
+                "Giá đóng cửa dự đoán": "${:,.2f}"
+            })
+            
+            st.dataframe(styled_df, use_container_width=True, height=300)
+
+        except Exception as e:
+            st.error(f"Đã xảy ra lỗi khi tạo bảng dữ liệu: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+# --- Streamlit App Main ---
+st.set_page_config(layout="wide", page_title="MÔ HÌNH HỌC SÂU DỰ ĐOÁN GIÁ CỔ PHIẾU")
+
+# Inject custom CSS for fixed header/footer and no scroll
+st.markdown("""<style>
+    /* Main page adjustments */
+    .main .block-container {
+        padding-top: 0rem;
+        padding-bottom: 2rem; /* Make space for footer */
+    }
+    /* Header margins */
+    h1[style*='text-align: center'] { margin-bottom: 0 !important; }
+    p[style*='text-align: right'] { margin-top: 0 !important; margin-bottom: 0 !important; }
+    hr { margin-top: 0.5rem !important; margin-bottom: 1rem !important; }
+    /* Fixed Footer */
+    .footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        background-color: transparent;
+        color: #888;
+        text-align: center;
+        padding: 5px 0;
+        font-size: 0.8rem;
+        z-index: 999;
+    }
+    .footer p { margin: 0; }
+</style>""", unsafe_allow_html=True)
+
+st.markdown("<h1 style='text-align: center; color: #0072B2;'>💹 MÔ HÌNH HỌC SÂU DỰ ĐOÁN GIÁ CỔ PHIẾU </h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: right; font-style: bold;'>Học viên: LÊ HỒNG PHONG - Mã số: 8480201</p>", unsafe_allow_html=True)
+st.markdown("---")
+
 components.html(market_overview_html, height=72)
 
 col1, col2 = st.columns([1, 2])
 with col1:
-    st.header("⚙️ Thiết lập")
-    ticker_input = st.text_input("Nhập mã cổ phiếu (VD: FPT, AAPL):", "FPT").upper()
-    days_to_predict = st.number_input("Số ngày dự đoán (1-30):", 1, 30, 7)
+    st.header("⚙️ Nhập mã cổ phiếu")
+    ticker_input = st.text_input("📈Nhập mã chứng khoán cần dự đoán (VD: FPT.VN, NVDA, AAPL...):", "AAPL").upper()
+    days_to_predict = st.number_input(
+        "📅 Số ngày dự đoán (1-30):",
+        min_value=1,
+        max_value=30,
+        value=7,
+        help="Mô hình đáng tin cậy nhất cho dự đoán ngắn hạn (1-7 ngày)."
+    )
+    col1_1, col1_2 = st.columns(2)
+    with col1_1:
+        run_button = st.button("🚀 Dự đoán", type="primary", use_container_width=True)
+    with col1_2:
+        force_train_button = st.button("🔄 Huấn luyện", use_container_width=True)
     
-    c1, c2 = st.columns(2)
-    run_button = c1.button("🚀 Dự đoán", type="primary", use_container_width=True)
-    force_train_button = c2.button("🔄 Huấn luyện lại", use_container_width=True)
-    
-    st.divider()
-    st.subheader("📰 Tin tức thị trường")
-    tab_news1, tab_news2, tab_news3 = st.tabs(["CafeF", "Vietstock", "NDH.vn"])
-    with tab_news1: display_news(get_cafef_news)
-    with tab_news2: display_news(get_vietstock_news)
-    with tab_news3: display_news(get_ndh_news)
+    st.markdown("<br>", unsafe_allow_html=True) # Add some space
+    components.html(market_data_html, height=450)
 
 with col2:
-    if run_button or force_train_button:
-        processed_ticker = get_valid_ticker(ticker_input)
-        st.header(f"📈 Kết quả cho: {processed_ticker}")
-        model_path = os.path.join(MODELS_DIR, f"{processed_ticker}_model.keras")
-        try:
-            if force_train_button or not os.path.exists(model_path):
-                st.info(f"Không tìm thấy mô hình có sẵn hoặc bạn yêu cầu huấn luyện lại. Bắt đầu quá trình mới...")
-                model, scaler, last_sequence, data_for_display = run_training(processed_ticker)
-            else:
-                st.info("Phát hiện mô hình đã được huấn luyện. Đang tải...")
-                model, scaler, last_sequence, data_for_display = run_prediction(processed_ticker)
+    st.header(f"📈 Kết quả dự đoán cho cổ phiếu: {ticker_input}")
+    action = None
+    if run_button:
+        action = 'predict_or_train'
+    elif force_train_button:
+        action = 'force_train'
+    
+    if action:
+        processed_ticker = ticker_input.split(',')[0].strip()
+        if not processed_ticker:
+            st.error("Mã chứng khoán không được để trống.")
+        else:
+            model_path = os.path.join(MODELS_DIR, f"{processed_ticker}_model.keras")
+            try:
+                if action == 'force_train' or not os.path.exists(model_path):
+                    st.warning(f"Bắt đầu quá trình huấn luyện mới cho {processed_ticker}.")
+                    model, scaler, last_sequence, data_for_display = run_training(processed_ticker)
+                else:
+                    model, scaler, last_sequence, data_for_display = run_prediction(processed_ticker)
+                
+                if data_for_display is not None:
+                    display_realtime_data(data_for_display)
 
-            if data_for_display is not None and not data_for_display.empty:
-                st.subheader("Dữ liệu Gần nhất")
-                st.dataframe(data_for_display.tail(5))
-
-            if all(v is not None for v in [model, scaler, last_sequence, data_for_display]):
-                with st.spinner("Đang tính toán dự đoán tương lai..."):
-                    future_prices = predict_future(model, scaler, last_sequence, days_to_predict)
-                display_results(data_for_display, processed_ticker, future_prices)
-        
-        except ValueError as e:
-            st.error(e)
-        except Exception as e:
-            st.error(f"Đã xảy ra một lỗi không mong muốn: {e}")
+                if all(v is not None for v in [model, scaler, last_sequence, data_for_display]):
+                    with st.spinner("Đang dự đoán giá tương lai..."):
+                        future_prices = predict_future(model, scaler, last_sequence, days_to_predict)
+                    display_results(data_for_display, processed_ticker, days_to_predict, future_prices)
+            
+            except ValueError as e:
+                st.error(e)
+                st.warning("Gợi ý: Mã CK Việt Nam thường có đuôi '.VN' (VCB.VN). Chỉ số có ký hiệu đặc biệt ('^VNINDEX').")
+            except Exception as e:
+                st.error(f"Đã xảy ra một lỗi nghiêm trọng: {e}")
+                import traceback
+                st.code(traceback.format_exc())
     else:
-        st.info("Nhập mã cổ phiếu và nhấn 'Dự đoán' để xem kết quả.")
+        st.write("Kết quả sẽ hiện thị sau khi nhấn nút để bắt đầu.")
+
+# Footer call
+st.markdown("<div class=\"footer\"><p><h5>© 2026 Lê Hồng Phong. Bảo lưu mọi quyền. Email: ngviphuc@gmail.com. SĐT: 0937 382 399</h5></p></div>", unsafe_allow_html=True)

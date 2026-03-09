@@ -33,7 +33,18 @@ def calculate_bollinger_bands(data, length=20, std=2):
     lower_band = middle_band - (std_dev * std)
     return lower_band, middle_band, upper_band
 
-# --- HÀM TẢI DỮ LIỆU CHÍNH ---
+# --- HÀM MỚI: TÍNH HỖ TRỢ & KHÁNG CỰ ---
+def calculate_support_resistance(data, length=90):
+    """
+    Tính toán các ngưỡng Hỗ trợ và Kháng cự dựa trên giá cao nhất và thấp nhất
+    trong một khoảng thời gian (rolling window).
+    """
+    print(f"Đang tính toán Hỗ trợ và Kháng cự trong khoảng {length} ngày...")
+    data['Resistance'] = data['High'].rolling(window=length).max()
+    data['Support'] = data['Low'].rolling(window=length).min()
+    return data
+
+# --- HÀM TẢI DỮ LIỆU CHÍNH (ĐÃ CẬP NHẬT) ---
 
 def download_stock_data(ticker, start_date="2019-01-01"):
     """
@@ -73,6 +84,9 @@ def download_stock_data(ticker, start_date="2019-01-01"):
         data['RSI'] = calculate_rsi(data)
         data['MACD'], data['MACD_Signal'], data['MACD_Histogram'] = calculate_macd(data)
         data['Bollinger_Lower'], data['Bollinger_Middle'], data['Bollinger_Upper'] = calculate_bollinger_bands(data)
+        
+        # BƯỚC MỚI: Tính toán Hỗ trợ và Kháng cự
+        data = calculate_support_resistance(data)
 
         # Reset index để 'Date' trở thành một cột
         data = data.reset_index()
@@ -80,11 +94,12 @@ def download_stock_data(ticker, start_date="2019-01-01"):
         if "Adj Close" not in data.columns and "Close" in data.columns:
             data["Adj Close"] = data["Close"]
 
-        # Xác định các cột sẽ được giữ lại
+        # CẬP NHẬT: Thêm 'Support' và 'Resistance' vào danh sách cột
         cols_to_keep = [
             'Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume',
             'RSI', 'MACD', 'MACD_Histogram', 'MACD_Signal',
-            'Bollinger_Lower', 'Bollinger_Middle', 'Bollinger_Upper'
+            'Bollinger_Lower', 'Bollinger_Middle', 'Bollinger_Upper',
+            'Support', 'Resistance' # <- CỘT MỚI
         ]
         
         # Chỉ giữ lại các cột thực sự tồn tại trong DataFrame
@@ -97,7 +112,7 @@ def download_stock_data(ticker, start_date="2019-01-01"):
         data.to_csv(file_path, index=False, encoding="utf-8-sig")
 
         print(f"\n>> THÀNH CÔNG! Đã lưu {len(data)} dòng dữ liệu vào '{file_path}'")
-        print("5 dòng dữ liệu cuối (đã bao gồm các chỉ báo kỹ thuật):")
+        print("5 dòng dữ liệu cuối (đã bao gồm các chỉ báo kỹ thuật và Hỗ trợ/Kháng cự):")
         print(data.tail().to_string())
 
     except Exception as e:
